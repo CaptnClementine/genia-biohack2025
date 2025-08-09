@@ -1,0 +1,24 @@
+# Development setup
+
+## Windows
+```python -m venv venv
+.\venv\Scripts\Activate.ps1
+```
+
+# If PowerShell blocks script execution, run PowerShell as Administrator and:
+# Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+
+## macOS/Linux
+```
+python -m venv venv
+source venv/bin/activate
+```
+
+## Install dependencies
+```pip install -r requirements.txt```
+
+## Run the app
+```streamlit run app.py```
+
+# Debugging
+```import pdb; pdb.set_trace()```
