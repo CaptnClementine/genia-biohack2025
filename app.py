@@ -103,92 +103,72 @@ with gene_tab:
     df = load_gene_table()
 
     if df is not None and not df.empty:
-        unique_vals = sorted(pd.unique(df['hgnc_symbol'].dropna().astype(str).str.strip())) if 'hgnc_symbol' in df.columns else []
-        value_set_lower = {v.lower() for v in unique_vals}
-        ensembl_vals = (
-            sorted(pd.unique(df['ensembl_gene_id'].dropna().astype(str).str.strip()))
-            if 'ensembl_gene_id' in df.columns else []
-        )
-        ensembl_set_lower = {v.lower() for v in ensembl_vals}
-
-        # Move controls to sidebar
         with st.sidebar:
             st.subheader("Gene Search")
-            manual = st.text_input(
-                "Enter gene (HGNC symbol or Ensembl ID)",
+            user_input = st.text_input(
+                "Enter genes (HGNC symbols or Ensembl IDs); separate multiple entries with commas",
                 placeholder="e.g., BRCA1 or ENSG00000141510",
                 key="manual_input",
             )
-            selected = st.selectbox(
-                "Select HGNC symbol",
-                options=["-- Choose --"] + unique_vals,
-                index=0,
-                key="select_input",
-            )
+            selected_genes = user_input.replace(" ", "").split(",") if user_input else []
+            # Validate terms: keep only those present in either hgnc_symbol or ensembl_gene_id.
+            # Collect those not found for user feedback.
+            if selected_genes:
+                df_symbols = set(df['hgnc_symbol'].dropna().astype(str)) if 'hgnc_symbol' in df.columns else set()
+                df_ensembl = set(df['ensembl_gene_id'].dropna().astype(str)) if 'ensembl_gene_id' in df.columns else set()
+                valid_set = df_symbols | df_ensembl
+                # Preserve original order while filtering
+                filtered = [t for t in selected_genes if t and t in valid_set]
+                not_found = [t for t in selected_genes if t and t not in valid_set]
+                selected_genes = filtered
+                if not selected_genes:
+                    st.warning("No valid gene identifiers found.")
+                elif not_found:
+                    st.warning(f"Not found / invalid: {', '.join(not_found)}")
 
-        # Decide which value to use (prefer manual input if provided)
-        chosen = manual.strip() if manual and manual.strip() else (selected if selected != "-- Choose --" else "")
+        if not selected_genes:
+            st.markdown("Please select at least one gene identifier to view details.")
+        else:
+            st.subheader(f"Selected genes {', '.join(selected_genes)}")
+            display_cols = ['hgnc_symbol','ensembl_gene_id','chromosome_name','description']
+            
+            sel_rows = df[df['hgnc_symbol'].isin(selected_genes) | df['ensembl_gene_id'].isin(selected_genes)]
+            existing = [c for c in display_cols if c in sel_rows.columns]
+            for _, row in sel_rows[existing].iterrows():
+                title = row.get('hgnc_symbol') or row.get('ensembl_gene_id')
+                st.markdown(f"### {title}")
+                for c in existing:
+                    st.markdown(f"**{c}**: {row[c] if pd.notna(row[c]) else ''}")
+                st.markdown("---")
 
-        # Main area: show results
-        if chosen:
-            chosen_l = chosen.casefold()
-            in_hgnc = chosen_l in value_set_lower
-            in_ensembl = chosen_l in ensembl_set_lower if ensembl_vals else False
-            if in_hgnc or in_ensembl:
-                st.header(chosen)
-                mask = False
-                if 'hgnc_symbol' in df.columns:
-                    mask = df['hgnc_symbol'].astype(str).str.casefold().eq(chosen_l)
-                if 'ensembl_gene_id' in df.columns:
-                    mask = mask | df['ensembl_gene_id'].astype(str).str.casefold().eq(chosen_l)
-                sel_rows = df[mask]
-                display_cols = ['ensembl_gene_id', 'description', 'hgnc_symbol', 'chromosome_name']
-                available_cols = [col for col in display_cols if col in sel_rows.columns]
-                if available_cols:
-                    sel_rows = sel_rows[available_cols]
+            sel_ensembl_ids = sel_rows['ensembl_gene_id'].dropna().astype(str).str.strip().unique().tolist() if 'ensembl_gene_id' in sel_rows.columns else []
 
-                for index, row in sel_rows.iterrows():
-                    for col in sel_rows.columns:
-                        st.markdown(f"**{col}**: {row[col]}")
-                        st.markdown("")
+            with st.expander("Consensus RNA data"):
+                consensus_df = load_consensus_for_ensembl(sel_ensembl_ids)
+                if consensus_df is None or consensus_df.empty:
+                    st.info("No consensus expression data found for the selected gene(s).")
+                else:
+                    st.markdown("[Consensus RNA data from the Human Protein Atlas](https://www.proteinatlas.org/humanproteome/tissue/data#consensus_tissues_rna)")
+                    st.markdown("The consensus normalized expression ('nTPM') value is calculated as the maximum nTPM value for each gene in the two data sources.")
+                    st.dataframe(consensus_df, use_container_width=True, hide_index=True)
 
-                # Consensus data from DB
-                with st.expander("Consensus RNA data"):
-                    if 'ensembl_gene_id' in sel_rows.columns:
-                        selected_ensembl_ids = sel_rows['ensembl_gene_id'].dropna().astype(str).str.strip().tolist()
-                        consensus_df = load_consensus_for_ensembl(selected_ensembl_ids)
-                        if consensus_df is None or consensus_df.empty:
-                            st.info("No consensus expression data found for the selected gene(s).")
-                        else:
-                            st.markdown("[Consensus RNA data from the Human Protein Atlas](https://www.proteinatlas.org/humanproteome/tissue/data#consensus_tissues_rna)")
-                            st.markdown("The consensus normalized expression ('nTPM') value is calculated as the maximum nTPM value for each gene in the two data sources.")
-                            consensus_filtered = consensus_df[['Tissue', 'nTPM']] if all(c in consensus_df.columns for c in ['Tissue','nTPM']) else consensus_df
-                            st.dataframe(consensus_filtered, use_container_width=True, hide_index=True)
-
-                # CDoseMap data
-                with st.expander("CDoseMap data"):
-                    if 'ensembl_gene_id' in sel_rows.columns:
-                        cd_ids = sel_rows['ensembl_gene_id'].dropna().astype(str).str.strip().tolist()
-                        cd_df = load_cdosemap_for_ensembl(cd_ids)
-                        if len(cd_df) < 1:
-                            st.markdown("No CDoseMap data found for the selected gene")
-                            st.image("tg_image_3445653099.jpeg", width = 200)
-                        else:
-                            show_cols = [c for c in [
-                                'cnv_type','cytoband','size','discovery_sig','known_gd',
-                                'gnomad_constrained_genes','db_source','article'
-                            ] if c in cd_df.columns]
-                            st.markdown("Data from [the paper](https://www.cell.com/cell/fulltext/S0092-8674(22)00788-7?_returnURL=https%3A%2F%2Flinkinghub.elsevier.com%2Fretrieve%2Fpii%2FS0092867422007887%3Fshowall%3Dtrue#mmc1)")
-                            st.markdown("Data were provided with gene symbols only. Do not extrapolate to specific Ensembl IDs")
-                            st.dataframe(cd_df[show_cols], use_container_width=True, hide_index=True)
-            else:
-                st.warning("We don't have such data")
-                suggestions = [v for v in unique_vals if v.lower().startswith(chosen.lower())]
-                if ensembl_vals:
-                    suggestions += [v for v in ensembl_vals if v.lower().startswith(chosen.lower())]
-                if suggestions:
-                    st.info("Did you mean: " + ", ".join(suggestions[:5]))
-
+            with st.expander("CDoseMap data"):
+                cd_df = load_cdosemap_for_ensembl(sel_ensembl_ids)
+                if cd_df is None or cd_df.empty:
+                    st.markdown("No CDoseMap data found for the selected gene(s).")
+                    st.image("tg_image_3445653099.jpeg", width=200)
+                else:
+                    show_cols = [c for c in [
+                        'cnv_type','cytoband','size','discovery_sig','known_gd',
+                        'gnomad_constrained_genes','db_source','article'
+                    ] if c in cd_df.columns]
+                    cd_clean = cd_df.dropna(how='all', subset=show_cols)
+                    if cd_clean.empty:
+                        st.info("No CNV annotations (only empty rows).")
+                    else:
+                        st.markdown("Data from [the paper](https://www.cell.com/cell/fulltext/S0092-8674(22)00788-7?_returnURL=https%3A%2F%2Flinkinghub.elsevier.com%2Fretrieve%2Fpii%2FS0092867422007887%3Fshowall%3Dtrue#mmc1)")
+                        st.markdown("Data were provided using gene symbols only; do not extrapolate to specific Ensembl IDs.")
+                        st.dataframe(cd_clean[show_cols], use_container_width=True, hide_index=True)
 with about_tab:
     try:
         with open("APP_README.md", "r", encoding="utf-8") as f:
