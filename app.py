@@ -2,8 +2,10 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 from typing import Optional
+import numpy as np 
+from plots import create_violin_plot
 
-st.set_page_config(page_title="GIA", layout="centered")
+st.set_page_config(page_title="GIA", layout="centered", page_icon="🧬",)
 st.title("Gene Insights & Analysis")
 
 st.markdown(
@@ -96,6 +98,29 @@ def load_cdosemap_for_ensembl(ensembl_ids: list[str]) -> Optional[pd.DataFrame]:
         return None
 
 
+
+# --- New: Gtex loader ---
+@st.cache_data(show_spinner=False)
+def load_gtex_data(ensembl_ids: list[str] = None) -> Optional[pd.DataFrame]:
+    if not ensembl_ids:
+        query = f"""
+            SELECT g.ensembl_gene_id, mean, median, std, tau, n_zero, n_below_low, n_above_low, n_above_high
+            FROM gtex_gene_stats e
+            JOIN gene g ON g.id = e.gene_id
+        """
+    else:
+        placeholders = ",".join(["?"] * len(ensembl_ids))
+        query += "WHERE g.ensembl_gene_id IN ({placeholders})"
+    conn = get_conn()
+    if not conn:
+        return None
+    try:
+        df = pd.read_sql_query(query, conn, params=ensembl_ids)
+        return df
+    except Exception as e:
+        st.error(f"Failed to load GTEx data: {e}")
+        return None
+
 # Replace top-level UI with tabbed layout
 gene_tab, about_tab = st.tabs(["Gene Search", "About"])
 
@@ -169,6 +194,30 @@ with gene_tab:
                         st.markdown("Data from [the paper](https://www.cell.com/cell/fulltext/S0092-8674(22)00788-7?_returnURL=https%3A%2F%2Flinkinghub.elsevier.com%2Fretrieve%2Fpii%2FS0092867422007887%3Fshowall%3Dtrue#mmc1)")
                         st.markdown("Data were provided using gene symbols only; do not extrapolate to specific Ensembl IDs.")
                         st.dataframe(cd_clean[show_cols], use_container_width=True, hide_index=True)
+
+            with st.expander("Enriched Gene Statistics"): #TODO naming!
+                gene_symbols_for_plot = sel_rows['ensembl_gene_id']
+
+                if len(gene_symbols_for_plot) == 0:
+                    st.info("No Ensembl IDs available for the selected entries.")
+                else:
+                    # read gene_info\gene_stats_enriched.csv
+                    #enriched_gene_stats = pd.read_csv("gene_info/gtex_gene_stats_enriched.csv")
+                    enriched_gene_stats = load_gtex_data()
+                    #import pdb; pdb.set_trace()
+                    #ensemble version ids are provided within the Name column
+                    # split values in the name column by "." and leave only first element
+                    #enriched_gene_stats['Name'] = enriched_gene_stats['Name'].str.split(".").str[0]
+                    st.caption("Sample synthetic data (not real expression).")
+                    st.caption("Two plots will be shown: one for the selected gene(s) and another for the selected feature group.")
+                    features = ["Feature 1", "Feature 2"] # TODO: define features from other datasets, for example is this gene is drug target or not
+                    selected_feature = st.selectbox("Select a feature group", options=features)
+                    st.caption("Note: Data for the selected genes will be excluded from the second plot, even if they share the same feature.")
+                    stats = ["mean", "median", "std", "tau", "n_zero", "n_below_low", "n_above_low", "n_above_high"]
+                    for stat in stats:
+                        create_violin_plot(gene_symbols_for_plot, plot_df=enriched_gene_stats, stat=stat, features=features)
+
+
 with about_tab:
     try:
         with open("APP_README.md", "r", encoding="utf-8") as f:
@@ -178,3 +227,5 @@ with about_tab:
         st.warning("APP_README.md not found in the project root.")
     except Exception as e:
         st.error(f"Could not read APP_README.md: {e}")
+
+
